@@ -17,24 +17,6 @@ extern Buzzer_cfg_t buzzer_cfg; // Buzzer control
 extern Joystick_cfg_t joystick_cfg;
 extern Joystick_t joystick_data;
 
-// Frame rate for this game (in milliseconds)
-#define GAME1_FRAME_TIME_MS 30  // ~33 FPS
-#define MAP_ROWS 11
-#define MAP_COLS 11
-#define CELL_SIZE 20
-#define MAP_X 10
-#define MAP_Y (10 + UI_HEIGHT)
-#define MOVE_COOLDOWN_MS 140
-#define UI_HEIGHT 20
-
-#define TILE_EMPTY 0
-#define TILE_SOLID_WALL 1
-#define TILE_BREAKABLE 2
-
-#define BOMB_COUNTDOWN_MS 2000
-#define EXPLOSION_DURATION_MS 300
-#define ENEMY_MOVE_INTERVAL_MS 450
-
 
 void Game1_Init(Game1State* state) {
     srand(HAL_GetTick());

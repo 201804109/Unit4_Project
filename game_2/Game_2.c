@@ -1,3 +1,18 @@
+/**
+ * @file    Game_2.c
+ * @brief   Ultimate Flight - 整合到组项目菜单框架版本
+ *
+ * 改造说明（基于原 Stage 1 main.c）：
+ *   1. 入口由 int main(void) 改为 MenuState Game2_Run(void)
+ *   2. 删除所有 HAL_Init / SystemClock_Config / MX_*_Init / Error_Handler / _write
+ *      （这些都在 Core/main.c 中完成）
+ *   3. cfg0 / buzzer_cfg 改为 extern（共享资源，已在 main.c 初始化）
+ *   4. joystick_cfg / joystick_data / pwm_cfg 改为 static（私有外设）
+ *   5. PC2 直接 GPIO 读取改为 current_input.btn2_pressed（框架统一输入）
+ *   6. 加入 btn3 全局退出菜单逻辑（框架约定）
+ *   7. 所有内部函数 / 全局变量加 static，避免与 Game_1 / Game_3 链接冲突
+ *   8. GameState_t 重命名为 Game2State_t，避免类型冲突
+ */
 
 #include "Game_2.h"
 #include "Menu.h"
@@ -13,7 +28,12 @@
 #include <stdio.h>
 #include <string.h>
 
-
+/* ============================================================
+ *  外部资源声明
+ *  ------------------------------------------------------------
+ *  CubeMX 在 Core/main.c 中生成的 HAL 句柄，以及组项目共享的
+ *  LCD / Buzzer 配置，都通过 extern 引用，绝不在此处重复初始化
+ * ============================================================ */
 extern ADC_HandleTypeDef hadc1;
 extern RNG_HandleTypeDef hrng;
 extern TIM_HandleTypeDef htim2;
@@ -22,7 +42,12 @@ extern TIM_HandleTypeDef htim4;
 extern ST7789V2_cfg_t  cfg0;          /* 共享 LCD     */
 extern Buzzer_cfg_t    buzzer_cfg;    /* 共享 Buzzer  */
 
-
+/* ============================================================
+ *  本游戏专属外设（不与其他 game 共享，故 static）
+ *  ------------------------------------------------------------
+ *  注意：Joystick_Init / PWM_Init 内部使用 setup_done 标志位，
+ *  所以多次调用是幂等的，可以放心在 Game2_Run() 入口再调一次
+ * ============================================================ */
 static Joystick_cfg_t joystick_cfg = {
     .adc           = &hadc1,
     .x_channel     = ADC_CHANNEL_1,
@@ -45,7 +70,32 @@ static PWM_cfg_t pwm_cfg = {
     .setup_done   = 0
 };
 
+/* ============================================================
+ *  游戏常量
+ * ============================================================ */
+#define SCREEN_WIDTH            240
+#define SCREEN_HEIGHT           240
+#define FPS                     30
+#define FRAME_TIME_MS           (1000 / FPS)
 
+#define PLAYER_WIDTH            16
+#define PLAYER_HEIGHT           14
+#define PLAYER_SPEED            4
+#define PLAYER_START_Y          205
+
+#define OBS_MAX_COUNT           10
+#define OBS_SPEED_INIT          3
+#define OBS_SPAWN_INTERVAL      25
+
+#define LIVES_INIT              3
+#define DIFFICULTY_INTERVAL_MS  10000
+#define SPEEDUP_DISPLAY_MS      2000
+
+/* 颜色索引：0=黑 1=白 2=红 3=绿 7=灰 8=紫 10=金 */
+
+/* ============================================================
+ *  数据结构
+ * ============================================================ */
 typedef enum {
     G2_TITLE,
     G2_PLAYING,
@@ -67,7 +117,9 @@ typedef struct {
     uint8_t active;
 } Obstacle_t;
 
-
+/* ============================================================
+ *  文件作用域全局变量（全部 static）
+ * ============================================================ */
 static Game2State_t  game_state;
 static Player_t      player;
 static Obstacle_t    obstacles[OBS_MAX_COUNT];
@@ -84,7 +136,9 @@ static uint32_t      speedup_anim_start;
 static uint32_t      pause_start_time;
 static uint8_t       joystick_released;
 
-
+/* ============================================================
+ *  内部函数原型（全部 static）
+ * ============================================================ */
 static void     game_init(void);
 static void     update_game(void);
 static void     render_game(void);
@@ -106,26 +160,29 @@ static void     draw_plane(int16_t x, int16_t y, uint8_t colour);
 static uint8_t  joystick_is_centered(void);
 static uint8_t  joystick_is_moved(void);
 
-
+/* ============================================================
+ *                  PUBLIC ENTRY  (called by Menu)
+ * ============================================================ */
 MenuState Game2_Run(void)
 {
+    /* 1. 一次性初始化本游戏专属外设（幂等） */
     Joystick_Init(&joystick_cfg);
     Joystick_Calibrate(&joystick_cfg);
     PWM_Init(&pwm_cfg);
 
-   
+    /* 2. 重置游戏状态机：每次进入游戏都从 TITLE 开始 */
     game_state = G2_TITLE;
     LCD_Fill_Buffer(0);
     render_title();
     play_startup_sound();
 
     uint32_t  last_frame_time = HAL_GetTick();
-    MenuState exit_state      = MENU_STATE_HOME;  
+    MenuState exit_state      = MENU_STATE_HOME;   /* 默认退回主菜单 */
 
-    
+    /* 3. 主循环 */
     while (1)
     {
-        
+        /* 蜂鸣器 / LED 非阻塞自动关闭 */
         if (buzzer_off_time > 0 && HAL_GetTick() >= buzzer_off_time) {
             buzzer_off(&buzzer_cfg);
             buzzer_off_time = 0;
@@ -135,14 +192,14 @@ MenuState Game2_Run(void)
             led_off_time = 0;
         }
 
-      
+        /* 帧节拍 30 FPS */
         uint32_t current_time = HAL_GetTick();
         if (current_time - last_frame_time < FRAME_TIME_MS) {
             continue;
         }
         last_frame_time = current_time;
 
-        
+        /* 读输入：框架按钮 + 摇杆 */
         Input_Read();
         Joystick_Read(&joystick_cfg, &joystick_data);
 
@@ -150,7 +207,7 @@ MenuState Game2_Run(void)
             joystick_released = 1;
         }
 
-      
+        /* 全局退出键：BT3 任何状态都可回主菜单（框架约定） */
         if (current_input.btn3_pressed) {
             exit_state = MENU_STATE_HOME;
             break;
@@ -189,7 +246,7 @@ MenuState Game2_Run(void)
                 if (current_input.btn2_pressed && joystick_released) {
                     joystick_released = 0;
 
-                    
+                    /* 时间补偿：把暂停时长加回各计时器 */
                     uint32_t pause_duration = HAL_GetTick() - pause_start_time;
                     last_difficulty_increase += pause_duration;
                     if (speedup_anim_start > 0) {
@@ -213,13 +270,15 @@ MenuState Game2_Run(void)
         }
     }
 
-  
+    /* 4. 退出前清理：保证不留下蜂鸣器/LED 残响 */
     buzzer_off(&buzzer_cfg);
     PWM_Off(&pwm_cfg);
     return exit_state;
 }
 
-
+/* ============================================================
+ *  摇杆辅助
+ * ============================================================ */
 static uint8_t joystick_is_centered(void)
 {
     return (joystick_data.coord_mapped.x >= -0.2f &&
@@ -236,7 +295,9 @@ static uint8_t joystick_is_moved(void)
             joystick_data.coord_mapped.y < -0.5f);
 }
 
-
+/* ============================================================
+ *  游戏初始化
+ * ============================================================ */
 static void game_init(void)
 {
     player.x = (SCREEN_WIDTH - PLAYER_WIDTH) / 2;
@@ -264,23 +325,26 @@ static void game_init(void)
     last_difficulty_increase = HAL_GetTick();
 }
 
-
+/* ============================================================
+ *  游戏逻辑更新
+ * ============================================================ */
 static void update_game(void)
 {
-   
+    /* 1. 摇杆移动玩家（仅水平） */
     if (joystick_data.coord_mapped.x >  0.3f) player.x += PLAYER_SPEED;
     if (joystick_data.coord_mapped.x < -0.3f) player.x -= PLAYER_SPEED;
 
     if (player.x < 0)                          player.x = 0;
     if (player.x > SCREEN_WIDTH - PLAYER_WIDTH) player.x = SCREEN_WIDTH - PLAYER_WIDTH;
 
+    /* 2. 每 10 秒提升难度，并触发 SPEED UP! 动画 */
     if (HAL_GetTick() - last_difficulty_increase > DIFFICULTY_INTERVAL_MS) {
         obs_speed++;
         last_difficulty_increase = HAL_GetTick();
         speedup_anim_start       = HAL_GetTick();
     }
 
- 
+    /* 3. 按帧间隔生成障碍物 */
     if (frame_count % current_spawn_interval == 0) {
         spawn_obstacle();
     }
@@ -289,8 +353,9 @@ static void update_game(void)
     check_collisions();
 }
 
-
-
+/* ============================================================
+ *  障碍物生成
+ * ============================================================ */
 static void spawn_obstacle(void)
 {
     for (int i = 0; i < OBS_MAX_COUNT; i++) {
@@ -309,7 +374,9 @@ static void spawn_obstacle(void)
     }
 }
 
-
+/* ============================================================
+ *  障碍物移动
+ * ============================================================ */
 static void update_obstacles(void)
 {
     for (int i = 0; i < OBS_MAX_COUNT; i++) {
@@ -325,7 +392,9 @@ static void update_obstacles(void)
     }
 }
 
-
+/* ============================================================
+ *  碰撞检测（AABB）
+ * ============================================================ */
 static void check_collisions(void)
 {
     for (int i = 0; i < OBS_MAX_COUNT; i++) {
@@ -345,18 +414,18 @@ static void check_collisions(void)
                 buzzer_off_time = 0;
                 play_gameover_sound();
 
-              
+                /* LED 长亮 1 秒表示 game over */
                 PWM_Set(&pwm_cfg, 1000, 100);
                 led_off_time = HAL_GetTick() + 1000;
 
-                joystick_released = 0;
+                joystick_released = 0;     /* 强制等玩家放手 */
                 game_state        = G2_GAMEOVER;
                 render_gameover();
                 return;
             } else {
                 play_hit_sound();
 
-           
+                /* LED 短闪 300ms 表示掉血 */
                 PWM_Set(&pwm_cfg, 1000, 100);
                 led_off_time = HAL_GetTick() + 300;
             }
@@ -364,15 +433,17 @@ static void check_collisions(void)
     }
 }
 
-
+/* ============================================================
+ *  游戏画面渲染
+ * ============================================================ */
 static void render_game(void)
 {
     LCD_Fill_Buffer(0);
 
-   
+    /* 1. 玩家飞机 */
     draw_plane(player.x, player.y, 3);
 
-    
+    /* 2. 炸弹 */
     for (int i = 0; i < OBS_MAX_COUNT; i++) {
         if (!obstacles[i].active) continue;
 
@@ -380,24 +451,24 @@ static void render_game(void)
         int16_t bx = obstacles[i].x + r;
         int16_t by = obstacles[i].y + r;
 
-        
+        /* 炸弹主体：灰色 */
         LCD_Draw_Circle(bx, by, r, 7, 1);
 
-        
+        /* 引信（灰色三条） */
         LCD_Draw_Line(bx - 1, by - r, bx + 6, by - r - 10, 7);
         LCD_Draw_Line(bx,     by - r, bx + 7, by - r - 10, 7);
         LCD_Draw_Line(bx + 1, by - r, bx + 8, by - r - 10, 7);
 
-        
+        /* 红色火花 */
         LCD_printString("*", bx + 6, by - r - 15, 2, 1);
     }
 
-   
+    /* 3. 顶部 UI */
     char info[40];
     sprintf(info, "SCORE:%u  LIFE:%d", (unsigned int)score, (int)lives);
     LCD_printString(info, 5, 5, 1, 1);
 
-    
+    /* 4. SPEED UP! 动画 */
     if (speedup_anim_start > 0) {
         uint32_t elapsed = HAL_GetTick() - speedup_anim_start;
 
@@ -409,13 +480,15 @@ static void render_game(void)
         }
     }
 
-    
+    /* 5. 框架返回主菜单提示（角标，不抢眼） */
     LCD_printString("BT3:Menu", 175, 5, 1, 1);
 
     LCD_Refresh(&cfg0);
 }
 
-
+/* ============================================================
+ *  暂停画面
+ * ============================================================ */
 static void render_pause(void)
 {
     LCD_printString("PAUSED",       66, 90,  1, 3);
@@ -424,7 +497,9 @@ static void render_pause(void)
     LCD_Refresh(&cfg0);
 }
 
-
+/* ============================================================
+ *  游戏结束画面
+ * ============================================================ */
 static void render_gameover(void)
 {
     LCD_Fill_Buffer(0);
@@ -442,7 +517,9 @@ static void render_gameover(void)
     LCD_Refresh(&cfg0);
 }
 
-
+/* ============================================================
+ *  像素爱心
+ * ============================================================ */
 static void draw_pixel_heart(int16_t x0, int16_t y0)
 {
     const uint8_t heart_map[11][13] = {
@@ -471,7 +548,9 @@ static void draw_pixel_heart(int16_t x0, int16_t y0)
     }
 }
 
-
+/* ============================================================
+ *  标题画面
+ * ============================================================ */
 static void render_title(void)
 {
     LCD_Draw_Rect(0,   0, 240, 120, 8, 1);  /* 上：紫 */
@@ -502,7 +581,9 @@ static void render_title(void)
     LCD_Refresh(&cfg0);
 }
 
-
+/* ============================================================
+ *  飞机绘制
+ * ============================================================ */
 static void draw_plane(int16_t x, int16_t y, uint8_t colour)
 {
     LCD_Draw_Line(x,     y + 6,  x + 15, y + 6,  colour);
@@ -512,7 +593,9 @@ static void draw_plane(int16_t x, int16_t y, uint8_t colour)
     LCD_Draw_Line(x + 4, y + 12, x + 11, y + 12, colour);
 }
 
-
+/* ============================================================
+ *  音效（非阻塞，由主循环 buzzer_off_time 自动关闭）
+ * ============================================================ */
 static void play_startup_sound(void)
 {
     buzzer_tone(&buzzer_cfg, 1000, 50);

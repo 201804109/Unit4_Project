@@ -1,16 +1,3 @@
-# Unit 4.1 Menu Template
-
-A collaborative game development framework for your Unit 4 Group Project, demonstrating how multiple students can implement their own games within a shared menu system and game loop architecture.
-
-## Overview
-
-This project provides:
-- **Centralized Menu System**: Navigate between 3 independent games
-- **Simple Game Loop**: INPUT → UPDATE → RENDER pattern
-- **Shared Resources**: LCD display, joystick input, buzzer, PWM LED
-- **Student Friendly**: Each student works in their own game folder
-- **No Merge Conflicts**: Shared code stays in `shared/`, each game in its own folder
-
 ## Project Structure
 
 ```
@@ -20,21 +7,17 @@ MenuTest/
 ├── shared/            # Shared menu system & input handling
 │   ├── Menu.h/c
 │   └── InputHandler.h/c
-├── game_1/            # Student 1's game
+├── game_1/           
 │   └── Game_1.c
-├── game_2/            # Student 2's game
+├── game_2/           
 │   └── Game_2.c
-├── game_3/            # Student 3's game
+├── game_3/           
 │   └── Game_3.c
 ├── Joystick/          # Hardware drivers
 ├── PWM/
 ├── Buzzer/
 └── CMakeLists.txt
 ```
-
-## Quick Start
-
-See [README_STUDENTS.md](README_STUDENTS.md) for detailed student guide.
 
 ## Architecture
 
